@@ -296,7 +296,7 @@ void accept_directory(const wchar_t* folder)
     diritem->parentnode = old_parent;
     diritem->paths = strtab; // used later in fragment table generation
 #ifdef __cplusplus
-    diritem->childs = (decltype(diritem->childs))malloc(sizeof(*diritem->childs) * sortcount);
+    diritem->childs = (decltype(diritem->childs))malloc(sizeof(*diritem->childs) * sortcount); // VC2010有限度支持decltype
 #else
     diritem->childs = malloc(sizeof(*diritem->childs) * sortcount);
 #endif
@@ -644,18 +644,14 @@ void save_data_blocks()
     free(inodetable.data);
     // save directory table
     sb.directory_table_start = g_block_offset;
-    //compress_meta_blocks(dirtable.data, dirtable.size, false);
-    //free(dirtable.data);
-    _write(g_opkfd, zdirtable->data, zdirtable->size);
-    g_block_offset += zdirtable->size;
+    g_block_offset += _write(g_opkfd, zdirtable->data, zdirtable->size);
+    //g_block_offset += zdirtable->size;
     free(zdirtable->data);
     free(zdirtable);
     // save fragment table
     if (fragtable.data) {
         sb.fragments = fragcnt;
         sb.fragment_table_start = compress_meta_blocks(fragtable.data, fragtable.size, true);
-        //compress_meta_blocks(fragtab.data, fragtab.size, true);
-        //sb.fragment_table_start = g_block_offset - fragcnt * sizeof(uint64_t);
         free(fragtable.data);
     } else {
         sb.fragments = -1;
