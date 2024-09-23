@@ -22,6 +22,11 @@
 #define INITIAL_BLOCK_CAPACITY 100
 #define INITIAL_DIR_ENTRIES 16
 
+#ifdef _VERBOSE
+#define verbose(fmt,...) printf(fmt, ##__VA_ARGS__)
+#else
+#define verbose(fmt,...)
+#endif
 
 typedef struct nodeitem
 {
@@ -33,11 +38,7 @@ typedef struct nodeitem
         };
         struct {
             struct stringtable* paths; // dir
-            union 
-            {
-                uint32_t parentnodenum;
-                struct nodeitem* parentnode;
-            };
+            uint32_t parentnodenum;
             struct {
                 uint32_t node;
                 uint16_t type;
@@ -67,7 +68,6 @@ typedef struct stringtable
 
 size_t g_BLOCK_SIZE = 128*1024;
 int g_opkfd;
-//int g_parent_inode = 0;
 int g_root_inode;
 size_t g_block_offset;
 uint64_t g_data_size;
@@ -235,15 +235,11 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
     if (hFind == INVALID_HANDLE_VALUE) {
         wprintf(L"Enum %s failed!\n", findpattern);
         free(findpattern);
-        return;
+        return -1;
     }
     free(findpattern);
     sortbundle* sortlist = NULL;
     int sortcount = 0;
-    //int old_parent = g_parent_inode;
-    //int cur_dir_inode = generate_inode_num();
-    //g_parent_inode = cur_dir_inode;
-    //wprintf(L"assign %s #%d\n", folder, cur_dir_inode);
     do {
         if (sortcount % 16 == 0) {
             sortlist = (sortbundle*)realloc(sortlist, sizeof(sortbundle) * (sortcount + 16));
@@ -274,9 +270,8 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
     //qsort(sortlist, sortcount, sizeof(sortbundle), (int(*)(const void*,const void*))wcscmp);
     stringtable* strtab = (stringtable*)calloc(1, sizeof(stringtable));
     uint32_t cur_dir_index = g_nodesize;
-    // add self to nodelist
+    // 先加入gnodes列表, 后面再分配ID
     nodeitem* diritem = new_nodeitem(SQUASHFS_DIR_TYPE, NULL, 0); // prevent reallocation
-    //diritem->nodenum = cur_dir_inode;
     diritem->parentnodenum = parent;
     diritem->paths = strtab;
     for (int i = 0; i < sortcount; i++) {
@@ -324,8 +319,10 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
     }
     // 在所有子目录循环结束后才生成自己ID
     int cur_dir_inode = generate_inode_num();
+#ifdef _VERBOSE
     wprintf(L"assign %s #%d\n", folder, cur_dir_inode);
-    diritem = &g_nodes[cur_dir_index];
+#endif
+    diritem = &g_nodes[cur_dir_index]; // 重找回当前目录node
     diritem->nodenum = cur_dir_inode;
 #ifdef __cplusplus
     diritem->childs = (decltype(diritem->childs))malloc(sizeof(*diritem->childs) * sortcount); // VC2010有限度支持decltype
@@ -341,7 +338,7 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
     return cur_dir_inode;
 }
 
-void regenerate_num()
+void regenerate_inode_num()
 {
     int* lookuptable = (int*)malloc(sizeof(int) * g_nodesize);
     for (int i = 0; i < g_nodesize; i++) {
@@ -383,12 +380,11 @@ int wmain(int argc, wchar_t ** argv)
     }
 
     // 首先扫描目录
-    //scan_directory2(argv[1]);
-    //scan_directory3(argv[1], 0);
-    //accept_directory(argv[1], 0);
-    //scan_directory_iterative(argv[1]);
     g_root_inode = accept_directory(argv[1], -1);
-    regenerate_num();
+    if (g_root_inode < 0) {
+        return 1;
+    }
+    regenerate_inode_num();
 #ifdef _VERBOSE
     for (int i = 0; i < g_nodesize; i++) {
         nodeitem* node = &g_nodes[i];
@@ -594,16 +590,16 @@ uint16_t* pre_caculate_inode_offsets()
         nodeitem* item = &g_nodes[i];
         switch (item->type) {
         case SQUASHFS_REG_TYPE:
-            nodeoffsets[item->nodenum] = nodevsize;
+            nodeoffsets[item->nodenum] = (uint16_t)nodevsize;
             nodevsize += sizeof(struct squashfs_reg_inode) + (item->size / g_BLOCK_SIZE) * sizeof(uint32_t);
             break;
         case SQUASHFS_SYMLINK_TYPE:
-            nodeoffsets[item->nodenum] = nodevsize;
+            nodeoffsets[item->nodenum] = (uint16_t)nodevsize;
             nodevsize += sizeof(struct squashfs_symlink_inode) + (size_t)item->size;
             break;
         case SQUASHFS_DIR_TYPE:
-            printf("set dir #%d offset to 0x%X\n", item->nodenum, nodevsize);
-            nodeoffsets[item->nodenum] = nodevsize;
+            verbose("set dir #%d offset to 0x%X\n", item->nodenum, nodevsize);
+            nodeoffsets[item->nodenum] = (uint16_t)nodevsize;
             nodevsize += sizeof(struct squashfs_dir_inode);
             break;
         }
@@ -624,9 +620,9 @@ void save_data_blocks()
     SYSTEM_INFO sysInfo;
     GetSystemInfo(&sysInfo);
     uint32_t num_cores = sysInfo.dwNumberOfProcessors;
-    pre_caculate_inode_offsets();
-    uint16_t* nodeoffsets = pre_caculate_inode_offsets(); // 给dir entry查表用 (非倒置树将无法运行中排序)
-    for (int i = 0; i < g_nodesize; i++) {
+    //uint16_t* nodeoffsets = pre_caculate_inode_offsets(); // 给dir entry查表用 (非倒置树将无法运行中排序)
+    uint16_t* nodeoffsets = (uint16_t*)malloc(sizeof(uint16_t) * g_nodesize); // 给dir entry查表用(倒置树, 运行中排序)
+    for (int i = g_nodesize - 1; i >= 0; i--) {
         nodeitem* item = &g_nodes[i];
         if (item->type == SQUASHFS_REG_TYPE) {
 #ifdef _INC_CRTDEFS
@@ -640,8 +636,8 @@ void save_data_blocks()
                 continue;
             }
             size_t blockcnt = item->size / g_BLOCK_SIZE; // 512T
-            //nodeoffsets[item->nodenum] = inodetable.size;
-            //printf("set file #%d offset to 0x%X\n", item->nodenum, inodetable.size);
+            nodeoffsets[item->nodenum] = (uint16_t)inodetable.size;
+            //verbose("set file #%d offset to 0x%X\n", item->nodenum, inodetable.size);
             struct squashfs_reg_inode* inode = (struct squashfs_reg_inode*)alloc_bytevec(&inodetable, sizeof(struct squashfs_reg_inode) + blockcnt * sizeof(uint32_t));
             inode->header.inode_type = SQUASHFS_REG_TYPE;
             inode->header.inode_number = item->nodenum;
@@ -696,7 +692,7 @@ void save_data_blocks()
             _close(fd);
         }
         if (item->type == SQUASHFS_SYMLINK_TYPE) {
-            //nodeoffsets[item->nodenum] = inodetable.size;
+            nodeoffsets[item->nodenum] = (uint16_t)inodetable.size;
             size_t linklen = (size_t)item->size; // utf8 count
             struct squashfs_symlink_inode* inode = (struct squashfs_symlink_inode*)alloc_bytevec(&inodetable, sizeof(struct squashfs_symlink_inode) + linklen);
             inode->header.inode_type = SQUASHFS_SYMLINK_TYPE;
@@ -710,8 +706,8 @@ void save_data_blocks()
         }
         if (item->type == SQUASHFS_DIR_TYPE) {
             size_t metablockpos = inodetable.size;
-            //printf("set dir #%d offset to 0x%X\n", item->nodenum, inodetable.size);
-            //nodeoffsets[item->nodenum] = inodetable.size;
+            //verbose("set dir #%d offset to 0x%X\n", item->nodenum, inodetable.size);
+            nodeoffsets[item->nodenum] = (uint16_t)inodetable.size;
             struct squashfs_dir_inode* inode = (struct squashfs_dir_inode*)alloc_bytevec(&inodetable, sizeof(struct squashfs_dir_inode));
             inode->header.inode_type = SQUASHFS_DIR_TYPE;
             inode->header.inode_number = item->nodenum;
@@ -721,7 +717,7 @@ void save_data_blocks()
                 inode->file_size = 3; // 不生成squashfs_dir_header
             }
             inode->nlink = 2; // historical . ..
-            inode->parent_inode = item->parentnode;
+            inode->parent_inode = item->parentnodenum;
             // 仅为非空目录生成目录内容列表(header+entries)
             // 依赖于nodeoffsets排序已完成, 如未做倒金字塔排序, 需要预先完整遍历
             if (item->paths->count) {
@@ -740,11 +736,11 @@ void save_data_blocks()
                     const char* filename = &item->paths->data[item->paths->indexes[j]];
                     size_t namelen = strlen(filename);
                     struct squashfs_dir_entry* entry = (struct squashfs_dir_entry*)alloc_bytevec(&dirtable, sizeof(struct squashfs_dir_entry) + namelen);
-                    memcpy(entry->name, filename, namelen);
+                    memcpy(entry->name, filename, namelen); // utf8
                     entry->type = item->childs[j].type;
                     entry->size = namelen - 1;
                     entry->inode_number = item->childs[j].node - startnode; // node差值不能超过+-32768, 超过要拆header
-                    printf("node \"%s\" #%d offset 0x%X\n", filename, item->childs[j].node, nodeoffsets[item->childs[j].node]);
+                    //verbose("node \"%s\" #%d offset 0x%X\n", filename, item->childs[j].node, nodeoffsets[item->childs[j].node]);
                     entry->offset = nodeoffsets[item->childs[j].node]; // 对应的node加入时的inodevec.size, 能在accept directory时候放在g_nodes里吗
                 }
             }
