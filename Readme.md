@@ -16,7 +16,7 @@ opack 输入文件夹 输出镜像.opk
 
 ## 如何编译
 
-可以使用以下编译工具：
+可以使用以下工具链:
 
 - WDK7
 - VC2010
@@ -26,16 +26,16 @@ opack 输入文件夹 输出镜像.opk
 ### 使用 VC2010 编译
 
 1. 将 `opack.c` 改名为 `opack.cpp`.
-2. 或者单独选中该文件, 在编译选项中将 `Compile As` 设置为 `C++`, 因为 VC2010 不支持 C99.
+2. 或者选中该文件, 单独在编译选项中将 `Compile As` 设置为 `C++`, 因为 VC2010 不支持 C99.
 
 ### 使用 VC2015/VC2017 编译
 
-如果使用 VC2015/VC2017 编译器, 请确保在编译选项中添加 `/d2noftol3`, 否则可能会出现找不到符号的错误.
+ReleaseXP配置的编译选项中默认加入了 `/d2noftol3`, 该选项是在高版本VC配合WDK的msvcrt.dll的.
 
-直接使用 C 编译
+不需要改名 `opack.c` 或者设置 `Compile As` 选项.
 
 ### 注意事项
 
-- `ReleaseXP` 选项是链接到 `msvcrt.dll`.
+- `ReleaseXP` 选项是链接到 `msvcrt.dll`. 此配置下请修改包含路径, 或者在MSBuild里面复制toolset, 修改VC20xx-WDK配置.
 - `Release` 选项是链接到对应版本的VC运行库, 在XP运行时候需要安装对应的运行库.
 

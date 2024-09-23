@@ -26,21 +26,21 @@
 typedef struct nodeitem
 {
     int type;
-    union 
-    {
-        struct
-        {
+    union {
+        struct {
             const wchar_t* path; // file or symbol link
             uint64_t size;
         };
-        struct
-        {
+        struct {
             struct stringtable* paths; // dir
-            uint32_t parentnode;
+            union 
+            {
+                uint32_t parentnodenum;
+                struct nodeitem* parentnode;
+            };
             struct {
                 uint32_t node;
                 uint16_t type;
-                //uint16_t offset;
             } *childs;
         };
     };
@@ -62,11 +62,13 @@ typedef struct stringtable
     size_t count;
     size_t size;
     size_t cap;
+    bool wide;
 } stringtable;
 
 size_t g_BLOCK_SIZE = 128*1024;
 int g_opkfd;
-int g_parent_inode = 0;
+//int g_parent_inode = 0;
+int g_root_inode;
 size_t g_block_offset;
 uint64_t g_data_size;
 nodeitem* g_nodes;
@@ -75,7 +77,8 @@ struct squashfs_super_block sb;
 
 void save_data_blocks();
 char* unicode_to_utf8(const wchar_t* source);
-void add_to_stringtable(stringtable* table, const char* str);
+void add_to_stringtable(stringtable* table, const void* str);
+const void* pop_from_stringtable(stringtable* table); // revoke last item
 void free_stringtable(stringtable* table);
 void append_bytevec(bytevec* vec, const void* buf, size_t len);
 void* alloc_bytevec(bytevec* vec, size_t len);
@@ -83,6 +86,12 @@ size_t compress_to_file(void* block, size_t blocksize, bool ismeta);
 uint64_t compress_meta_blocks(void* buf, size_t len, bool withoffsets);
 
 long generate_inode_num()
+{
+    static LONG inode_num = 0;
+    return InterlockedIncrement(&inode_num);
+}
+
+long generate_inode_num2()
 {
     static LONG inode_num = 0;
     return InterlockedIncrement(&inode_num);
@@ -150,7 +159,7 @@ void* alloc_bytevec(bytevec* vec, size_t len)
     return ptr;
 }
 
-void add_to_stringtable(stringtable* table, const char* str)
+void add_to_stringtable(stringtable* table, const void* str)
 {
     if (table->count % 16 == 0) {
         int* newindexes = (int*)realloc(table->indexes, sizeof(int) * (table->count + 16));
@@ -160,7 +169,7 @@ void add_to_stringtable(stringtable* table, const char* str)
         }
         table->indexes = newindexes;
     }
-    size_t len = strlen(str) + 1;
+    size_t len = table->wide?((wcslen(str) + 1) * 2):(strlen(str) + 1);
     if (table->size + len > table->cap) {
         size_t newcap = ((table->size + len + 255) / 256) * 256;
         char* newdata = (char*)realloc(table->data, newcap);
@@ -175,6 +184,13 @@ void add_to_stringtable(stringtable* table, const char* str)
     table->indexes[table->count] = table->size;
     table->size += len;
     table->count++;
+}
+
+const void* pop_from_stringtable(stringtable* table)
+{
+    int lastidx = table->indexes[--table->count];
+    table->size = lastidx;
+    return &table->data[lastidx];
 }
 
 void free_stringtable(stringtable* table)
@@ -210,7 +226,7 @@ typedef struct sortbundle
 } sortbundle;
 
 // TODO: 递归构建目录列表, 最后遍历扫描目录混合列表, 再qsort扁平列表
-void accept_directory(const wchar_t* folder)
+int accept_directory(const wchar_t* folder, uint32_t parent)
 {
     WIN32_FIND_DATAW ffd;
     wchar_t* findpattern = (wchar_t*)malloc(2 * (wcslen(folder) + sizeof "\\*"));
@@ -224,9 +240,10 @@ void accept_directory(const wchar_t* folder)
     free(findpattern);
     sortbundle* sortlist = NULL;
     int sortcount = 0;
-    int old_parent = g_parent_inode;
-    int cur_dir_inode = generate_inode_num();
-    g_parent_inode = cur_dir_inode;
+    //int old_parent = g_parent_inode;
+    //int cur_dir_inode = generate_inode_num();
+    //g_parent_inode = cur_dir_inode;
+    //wprintf(L"assign %s #%d\n", folder, cur_dir_inode);
     do {
         if (sortcount % 16 == 0) {
             sortlist = (sortbundle*)realloc(sortlist, sizeof(sortbundle) * (sortcount + 16));
@@ -236,26 +253,32 @@ void accept_directory(const wchar_t* folder)
                 sortbundle* item = &sortlist[sortcount++];
                 memcpy(item->cFileName, ffd.cFileName, sizeof(ffd.cFileName));
                 item->inode_type = SQUASHFS_DIR_TYPE;
-                item->inode_num = generate_inode_num();
+                //item->inode_num = sortcount;
             }
         } else if (ffd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT && ffd.dwReserved0 == IO_REPARSE_TAG_SYMLINK) {
             sortbundle* item = &sortlist[sortcount++];
             memcpy(item->cFileName, ffd.cFileName, sizeof(ffd.cFileName));
             item->inode_type = SQUASHFS_SYMLINK_TYPE;
-            item->inode_num = generate_inode_num();
+            item->inode_num = generate_inode_num2();
         } else {
             LARGE_INTEGER filesize = {ffd.nFileSizeLow, ffd.nFileSizeHigh};
             g_data_size += filesize.QuadPart;
             sortbundle* item = &sortlist[sortcount++];
             memcpy(item->cFileName, ffd.cFileName, sizeof(ffd.cFileName));
             item->inode_type = SQUASHFS_REG_TYPE;
-            item->inode_num = generate_inode_num();
+            item->inode_num = generate_inode_num2();
             item->nFileSize = filesize.QuadPart;
         }
     } while (FindNextFileW(hFind, &ffd) != 0);
     FindClose(hFind);
-    qsort(sortlist, sortcount, sizeof(sortbundle), (int(*)(const void*,const void*))wcscmp);
+    //qsort(sortlist, sortcount, sizeof(sortbundle), (int(*)(const void*,const void*))wcscmp);
     stringtable* strtab = (stringtable*)calloc(1, sizeof(stringtable));
+    uint32_t cur_dir_index = g_nodesize;
+    // add self to nodelist
+    nodeitem* diritem = new_nodeitem(SQUASHFS_DIR_TYPE, NULL, 0); // prevent reallocation
+    //diritem->nodenum = cur_dir_inode;
+    diritem->parentnodenum = parent;
+    diritem->paths = strtab;
     for (int i = 0; i < sortcount; i++) {
         sortbundle* sitem = &sortlist[i];
         //wprintf(L"%s\n", sitem->cFileName);
@@ -265,7 +288,8 @@ void accept_directory(const wchar_t* folder)
             nodeitem* nitem = new_nodeitem(SQUASHFS_REG_TYPE, newpath, sitem->nFileSize);
             nitem->nodenum = sitem->inode_num;
         } else if (sitem->inode_type == SQUASHFS_DIR_TYPE) {
-            accept_directory(newpath);
+            //wprintf(L"Enter %s, parent idx %d\n", newpath, cur_dir_index);
+            sitem->inode_num = accept_directory(newpath, cur_dir_index);
             free(newpath); // diritem不使用newpath, 在此free, 别的newpath在main里free_nodes来free
         } else {
             HANDLE hFile = CreateFileW(newpath, 0, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
@@ -279,32 +303,76 @@ void accept_directory(const wchar_t* folder)
                             (reparseData->SymbolicLinkReparseBuffer.SubstituteNameOffset / sizeof(WCHAR));
                         DWORD linkTargetLength = reparseData->SymbolicLinkReparseBuffer.SubstituteNameLength / sizeof(WCHAR);
                         char* utf8 = unicode_to_utf8(linkTarget);
-                        nodeitem* nitem = new_nodeitem(SQUASHFS_SYMLINK_TYPE, (wchar_t*)unicode_to_utf8(linkTarget), strlen(utf8));
+                        char* dest = utf8;
+                        while (*dest) {
+                            if (*dest == '\\') {
+                                *dest = '/'; // 替换路径分隔符
+                            }
+                            dest++;
+                        }
+                        nodeitem* nitem = new_nodeitem(SQUASHFS_SYMLINK_TYPE, (wchar_t*)utf8, strlen(utf8));
+                        nitem->nodenum = sitem->inode_num;
                     }
                 }
                 CloseHandle(hFile);
             }
         }
-        // 短名称
+        // 短名称, 后面生成目录列表用
         char* utf8 = unicode_to_utf8(sitem->cFileName);
         add_to_stringtable(strtab, utf8);
         free(utf8);
     }
-    // add self to nodelist
-    nodeitem* diritem = new_nodeitem(SQUASHFS_DIR_TYPE, NULL, 0);
+    // 在所有子目录循环结束后才生成自己ID
+    int cur_dir_inode = generate_inode_num();
+    wprintf(L"assign %s #%d\n", folder, cur_dir_inode);
+    diritem = &g_nodes[cur_dir_index];
     diritem->nodenum = cur_dir_inode;
-    diritem->parentnode = old_parent;
-    diritem->paths = strtab; // used later in fragment table generation
 #ifdef __cplusplus
     diritem->childs = (decltype(diritem->childs))malloc(sizeof(*diritem->childs) * sortcount); // VC2010有限度支持decltype
 #else
     diritem->childs = malloc(sizeof(*diritem->childs) * sortcount);
 #endif
+    // 目录内容查表用
     for (int i = 0; i < sortcount; i++) {
-        diritem->childs[i].node = sortlist[i].inode_num;
+        diritem->childs[i].node = sortlist[i].inode_num; // dir正式, 其他临时
         diritem->childs[i].type = sortlist[i].inode_type;
     }
     free(sortlist);
+    return cur_dir_inode;
+}
+
+void regenerate_num()
+{
+    int* lookuptable = (int*)malloc(sizeof(int) * g_nodesize);
+    for (int i = 0; i < g_nodesize; i++) {
+        nodeitem* node = &g_nodes[i];
+        if (node->type == SQUASHFS_REG_TYPE || node->type == SQUASHFS_SYMLINK_TYPE) {
+            long realnodenum = generate_inode_num();
+            lookuptable[node->nodenum] = realnodenum;
+            node->nodenum = realnodenum;
+        }
+        // fix parent
+        if (node->type == SQUASHFS_DIR_TYPE) {
+            int parentidx = node->parentnodenum;
+            if (parentidx == -1) {
+                node->parentnodenum = 0;
+            } else {
+                node->parentnodenum = g_nodes[parentidx].nodenum;
+            }
+        }
+    }
+    for (int i = 0; i < g_nodesize; i++) {
+        nodeitem* node = &g_nodes[i];
+        // fix childs
+        if (node->type == SQUASHFS_DIR_TYPE) {
+            for (int j = 0; j < node->paths->count; j++) {
+                if (node->childs[j].type != SQUASHFS_DIR_TYPE) {
+                    node->childs[j].node = lookuptable[node->childs[j].node];
+                }
+            }
+        }
+    }
+    free(lookuptable);
 }
 
 int wmain(int argc, wchar_t ** argv)
@@ -313,6 +381,38 @@ int wmain(int argc, wchar_t ** argv)
         printf("Usage: opack <input_directory> <output_file>\n");
         return 1;
     }
+
+    // 首先扫描目录
+    //scan_directory2(argv[1]);
+    //scan_directory3(argv[1], 0);
+    //accept_directory(argv[1], 0);
+    //scan_directory_iterative(argv[1]);
+    g_root_inode = accept_directory(argv[1], -1);
+    regenerate_num();
+#ifdef _VERBOSE
+    for (int i = 0; i < g_nodesize; i++) {
+        nodeitem* node = &g_nodes[i];
+        if (node->type == SQUASHFS_REG_TYPE) {
+            printf("file %S #%d, size %d\n", node->path, node->nodenum, node->size);
+        }
+        if (node->type == SQUASHFS_SYMLINK_TYPE) {
+            printf("link #%d, target %s\n", node->nodenum, (char*)node->path);
+        }
+        if (node->type == SQUASHFS_DIR_TYPE) {
+            printf("dir #%d, parent %d\n", node->nodenum, node->parentnodenum);
+            //int parentidx = node->parentnodenum;
+            //if (parentidx == -1) {
+            //    printf("dir #%d, parent %d\n", node->nodenum, parentidx);
+            //} else {
+            //    printf("dir #%d, parent %d = #%d\n", node->nodenum, parentidx, g_nodes[parentidx].nodenum);
+            //}
+            const char* names[] = {"dir ", "file", "link"};
+            for (int j = 0; j < node->paths->count; j++) {
+                printf("  %s, #%d\n", names[node->childs[j].type - 1], node->childs[j].node);
+            }
+        }
+    }
+#endif
     g_opkfd = _wopen(argv[2], O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, _S_IWRITE);
     if (g_opkfd == -1) {
         perror("Error opening output file");
@@ -323,8 +423,6 @@ int wmain(int argc, wchar_t ** argv)
     _lseek(g_opkfd, sizeof(struct squashfs_super_block), SEEK_SET);
     g_block_offset = sizeof(struct squashfs_super_block);
 
-    // 首先扫描目录
-    accept_directory(argv[1]);
     save_data_blocks();
 
     free_nodes();
@@ -350,6 +448,7 @@ int wmain(int argc, wchar_t ** argv)
 
 size_t compress_to_file(void* block, size_t blocksize, bool ismeta)
 {
+    bool compressed;
 #ifdef USE_ZOPFLI
     ZopfliOptions options;
     ZopfliInitOptions(&options);
@@ -357,13 +456,14 @@ size_t compress_to_file(void* block, size_t blocksize, bool ismeta)
     unsigned char* zblock = NULL;
     size_t zsize = 0;
     ZopfliZlibCompress(&options, (unsigned char*)block, blocksize, &zblock, &zsize);
-    if (zblock && zsize < blocksize) {
+    compressed = zsize < blocksize;
 #else
     uLong zsize = compressBound(blocksize);
     void* zblock = malloc(zsize);
     int ret = compress2(zblock, &zsize, block, blocksize, Z_BEST_COMPRESSION); //compressData(block, g_BLOCK_SIZE, &zblock, &zsize);
-    if (ret == Z_OK && zsize < blocksize) {
+    compressed = ret == Z_OK && zsize < blocksize;
 #endif
+    if (compressed) {
         if (ismeta) {
             _write(g_opkfd, &zsize, sizeof(uint16_t)); // little endian
         }
@@ -400,8 +500,8 @@ uint64_t compress_meta_blocks(void* buf, size_t len, bool withoffsets)
     }
     uint64_t offsetsoffset = g_block_offset;
     if (withoffsets) {
-        _write(g_opkfd, offsets, sizeof(uint64_t) * blockcnt);
-        g_block_offset += sizeof(uint64_t) * blockcnt;
+        g_block_offset += _write(g_opkfd, offsets, sizeof(uint64_t) * blockcnt);
+        //g_block_offset += sizeof(uint64_t) * blockcnt;
         free(offsets);
     }
     return offsetsoffset;
@@ -416,6 +516,7 @@ bytevec* pre_compress_meta_blocks(bytevec* src, uint32_t* offsets)
     int len = src->size;
     for (int i = 0; i < blockcnt; i++, block += MDB_SIZE) {
         size_t blocksize = len >= MDB_SIZE ? MDB_SIZE : len;
+        bool compressed;
 #ifdef USE_ZOPFLI
         ZopfliOptions options;
         ZopfliInitOptions(&options);
@@ -424,14 +525,15 @@ bytevec* pre_compress_meta_blocks(bytevec* src, uint32_t* offsets)
         size_t zsize = 0;
         offsets[i] = dest->size;
         ZopfliZlibCompress(&options, block, blocksize, &zblock, &zsize);
-        if (zblock && zsize < blocksize) {
+        compressed = zsize < blocksize;
 #else
         uLong zsize = compressBound(blocksize);
         void* zblock = malloc(zsize);
         offsets[i] = dest->size;
         int ret = compress2(zblock, &zsize, block, blocksize, Z_BEST_COMPRESSION);
-        if (ret == Z_OK && zsize < blocksize) {
+        compressed = ret == Z_OK && zsize < blocksize;
 #endif
+        if (compressed) {
             *(uint16_t*)alloc_bytevec(dest, sizeof(uint16_t)) = (uint16_t)zsize; // little endian
             append_bytevec(dest, zblock, zsize);
         } else {
@@ -458,6 +560,7 @@ typedef struct compresstask
 unsigned __stdcall compresstask_proc(void* arg)
 {
     compresstask* task = (compresstask*)arg;
+    bool compressed;
 #ifdef USE_ZOPFLI
     ZopfliOptions options;
     ZopfliInitOptions(&options);
@@ -465,13 +568,14 @@ unsigned __stdcall compresstask_proc(void* arg)
     unsigned char* zblock = NULL;
     size_t zsize = 0;
     ZopfliZlibCompress(&options, (unsigned char*)task->block, task->blocksize, &zblock, &zsize);
-    if (zblock && zsize < task->blocksize) {
+    compressed = zsize < task->blocksize;
 #else
     uLong zsize = compressBound(blocksize);
     void* zblock = malloc(zsize);
     int ret = compress2(zblock, &zsize, block, blocksize, Z_BEST_COMPRESSION);
-    if (ret == Z_OK && zsize < blocksize) {
+    compressed = ret == Z_OK && zsize < blocksize;
 #endif
+    if (compressed) {
         task->zblock = zblock;
         task->zsize = zsize;
     } else {
@@ -480,6 +584,31 @@ unsigned __stdcall compresstask_proc(void* arg)
         task->zsize = 0;
     }
     return 0;
+}
+
+uint16_t* pre_caculate_inode_offsets()
+{
+    uint16_t* nodeoffsets = (uint16_t*)malloc(sizeof(uint16_t) * g_nodesize); // 给dir entry查表用
+    size_t nodevsize = 0;
+    for (int i = 0; i < g_nodesize; i++) {
+        nodeitem* item = &g_nodes[i];
+        switch (item->type) {
+        case SQUASHFS_REG_TYPE:
+            nodeoffsets[item->nodenum] = nodevsize;
+            nodevsize += sizeof(struct squashfs_reg_inode) + (item->size / g_BLOCK_SIZE) * sizeof(uint32_t);
+            break;
+        case SQUASHFS_SYMLINK_TYPE:
+            nodeoffsets[item->nodenum] = nodevsize;
+            nodevsize += sizeof(struct squashfs_symlink_inode) + (size_t)item->size;
+            break;
+        case SQUASHFS_DIR_TYPE:
+            printf("set dir #%d offset to 0x%X\n", item->nodenum, nodevsize);
+            nodeoffsets[item->nodenum] = nodevsize;
+            nodevsize += sizeof(struct squashfs_dir_inode);
+            break;
+        }
+    }
+    return nodeoffsets;
 }
 
 void save_data_blocks()
@@ -495,7 +624,8 @@ void save_data_blocks()
     SYSTEM_INFO sysInfo;
     GetSystemInfo(&sysInfo);
     uint32_t num_cores = sysInfo.dwNumberOfProcessors;
-    uint16_t* nodeoffsets = (uint16_t*)malloc(sizeof(uint16_t) * g_nodesize); // 给dir entry用
+    pre_caculate_inode_offsets();
+    uint16_t* nodeoffsets = pre_caculate_inode_offsets(); // 给dir entry查表用 (非倒置树将无法运行中排序)
     for (int i = 0; i < g_nodesize; i++) {
         nodeitem* item = &g_nodes[i];
         if (item->type == SQUASHFS_REG_TYPE) {
@@ -510,7 +640,8 @@ void save_data_blocks()
                 continue;
             }
             size_t blockcnt = item->size / g_BLOCK_SIZE; // 512T
-            nodeoffsets[item->nodenum] = inodetable.size;
+            //nodeoffsets[item->nodenum] = inodetable.size;
+            //printf("set file #%d offset to 0x%X\n", item->nodenum, inodetable.size);
             struct squashfs_reg_inode* inode = (struct squashfs_reg_inode*)alloc_bytevec(&inodetable, sizeof(struct squashfs_reg_inode) + blockcnt * sizeof(uint32_t));
             inode->header.inode_type = SQUASHFS_REG_TYPE;
             inode->header.inode_number = item->nodenum;
@@ -565,7 +696,7 @@ void save_data_blocks()
             _close(fd);
         }
         if (item->type == SQUASHFS_SYMLINK_TYPE) {
-            nodeoffsets[item->nodenum] = inodetable.size;
+            //nodeoffsets[item->nodenum] = inodetable.size;
             size_t linklen = (size_t)item->size; // utf8 count
             struct squashfs_symlink_inode* inode = (struct squashfs_symlink_inode*)alloc_bytevec(&inodetable, sizeof(struct squashfs_symlink_inode) + linklen);
             inode->header.inode_type = SQUASHFS_SYMLINK_TYPE;
@@ -573,18 +704,26 @@ void save_data_blocks()
             inode->symlink_size = linklen;
             memcpy(inode->symlink, item->path, linklen); // utf8 content
         }
-        if (i == g_nodesize - 1) {
+        // 根目录node的偏移写入superblock
+        if (item->nodenum == g_root_inode) {
             sb.root_inode = inodetable.size;
         }
         if (item->type == SQUASHFS_DIR_TYPE) {
             size_t metablockpos = inodetable.size;
-            nodeoffsets[item->nodenum] = inodetable.size;
+            //printf("set dir #%d offset to 0x%X\n", item->nodenum, inodetable.size);
+            //nodeoffsets[item->nodenum] = inodetable.size;
             struct squashfs_dir_inode* inode = (struct squashfs_dir_inode*)alloc_bytevec(&inodetable, sizeof(struct squashfs_dir_inode));
             inode->header.inode_type = SQUASHFS_DIR_TYPE;
             inode->header.inode_number = item->nodenum;
-            inode->file_size = sizeof(struct squashfs_dir_header) + sizeof(struct squashfs_dir_entry) * item->paths->count + (item->paths->size - item->paths->count) + 3;
+            if (item->paths->count) {
+                inode->file_size = sizeof(struct squashfs_dir_header) + sizeof(struct squashfs_dir_entry) * item->paths->count + (item->paths->size - item->paths->count) + 3;
+            } else {
+                inode->file_size = 3; // 不生成squashfs_dir_header
+            }
             inode->nlink = 2; // historical . ..
+            inode->parent_inode = item->parentnode;
             // 仅为非空目录生成目录内容列表(header+entries)
+            // 依赖于nodeoffsets排序已完成, 如未做倒金字塔排序, 需要预先完整遍历
             if (item->paths->count) {
                 //inode->start_block = (dirtable.size / MDB_SIZE) * MDB_SIZE; // 需要是dir header所在metablock压缩后偏移
                 fixpair* fix = (fixpair*)alloc_bytevec(&fixuptable, sizeof(fixpair));
@@ -605,6 +744,7 @@ void save_data_blocks()
                     entry->type = item->childs[j].type;
                     entry->size = namelen - 1;
                     entry->inode_number = item->childs[j].node - startnode; // node差值不能超过+-32768, 超过要拆header
+                    printf("node \"%s\" #%d offset 0x%X\n", filename, item->childs[j].node, nodeoffsets[item->childs[j].node]);
                     entry->offset = nodeoffsets[item->childs[j].node]; // 对应的node加入时的inodevec.size, 能在accept directory时候放在g_nodes里吗
                 }
             }
