@@ -267,7 +267,8 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
         }
     } while (FindNextFileW(hFind, &ffd) != 0);
     FindClose(hFind);
-    //qsort(sortlist, sortcount, sizeof(sortbundle), (int(*)(const void*,const void*))wcscmp);
+    // asc=2E6, desc=2EA, qsort+desc=2E8
+    qsort(sortlist, sortcount, sizeof(sortbundle), (int(*)(const void*,const void*))wcscmp);
     stringtable* strtab = (stringtable*)calloc(1, sizeof(stringtable));
     uint32_t cur_dir_index = g_nodesize;
     // 先加入gnodes列表, 后面再分配ID
@@ -331,7 +332,7 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
 #endif
     // 目录内容查表用
     for (int i = 0; i < sortcount; i++) {
-        diritem->childs[i].node = sortlist[i].inode_num; // dir正式, 其他临时
+        diritem->childs[i].node = sortlist[i].inode_num; // dir正式ID, 其他临时ID
         diritem->childs[i].type = sortlist[i].inode_type;
     }
     free(sortlist);
@@ -497,7 +498,6 @@ uint64_t compress_meta_blocks(void* buf, size_t len, bool withoffsets)
     uint64_t offsetsoffset = g_block_offset;
     if (withoffsets) {
         g_block_offset += _write(g_opkfd, offsets, sizeof(uint64_t) * blockcnt);
-        //g_block_offset += sizeof(uint64_t) * blockcnt;
         free(offsets);
     }
     return offsetsoffset;
@@ -781,7 +781,6 @@ void save_data_blocks()
     // save directory table
     sb.directory_table_start = g_block_offset;
     g_block_offset += _write(g_opkfd, zdirtable->data, zdirtable->size);
-    //g_block_offset += zdirtable->size;
     free(zdirtable->data);
     free(zdirtable);
     // save fragment table
