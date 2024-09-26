@@ -38,7 +38,11 @@ typedef struct nodeitem
         };
         struct {
             struct stringtable* paths; // dir
-            uint32_t parentnodenum;
+            union
+            {
+                uint32_t parentnodenum;
+                uint32_t* parentnode;
+            };
             struct {
                 uint32_t node;
                 uint16_t type;
@@ -67,6 +71,7 @@ typedef struct stringtable
 } stringtable;
 
 size_t g_BLOCK_SIZE = 128*1024;
+bool g_notailends = true;
 int g_opkfd;
 int g_root_inode;
 size_t g_block_offset;
@@ -345,7 +350,8 @@ void regenerate_inode_num()
     for (int i = 0; i < g_nodesize; i++) {
         nodeitem* node = &g_nodes[i];
         if (node->type == SQUASHFS_REG_TYPE || node->type == SQUASHFS_SYMLINK_TYPE) {
-            long realnodenum = generate_inode_num();
+            //long realnodenum = generate_inode_num(); // 重新排序
+            long realnodenum = node->nodenum + g_root_inode; // 兼容扫描时顺序
             lookuptable[node->nodenum] = realnodenum;
             node->nodenum = realnodenum;
         }
@@ -566,10 +572,10 @@ unsigned __stdcall compresstask_proc(void* arg)
     ZopfliZlibCompress(&options, (unsigned char*)task->block, task->blocksize, &zblock, &zsize);
     compressed = zsize < task->blocksize;
 #else
-    uLong zsize = compressBound(blocksize);
+    uLong zsize = compressBound(task->blocksize);
     void* zblock = malloc(zsize);
-    int ret = compress2(zblock, &zsize, block, blocksize, Z_BEST_COMPRESSION);
-    compressed = ret == Z_OK && zsize < blocksize;
+    int ret = compress2(zblock, &zsize, task->block, task->blocksize, Z_BEST_COMPRESSION);
+    compressed = ret == Z_OK && zsize < task->blocksize;
 #endif
     if (compressed) {
         task->zblock = zblock;
@@ -636,6 +642,9 @@ void save_data_blocks()
                 continue;
             }
             size_t blockcnt = item->size / g_BLOCK_SIZE; // 512T
+            if (blockcnt && g_notailends && item->size % g_BLOCK_SIZE) {
+                blockcnt++;
+            }
             nodeoffsets[item->nodenum] = (uint16_t)inodetable.size;
             //verbose("set file #%d offset to 0x%X\n", item->nodenum, inodetable.size);
             struct squashfs_reg_inode* inode = (struct squashfs_reg_inode*)alloc_bytevec(&inodetable, sizeof(struct squashfs_reg_inode) + blockcnt * sizeof(uint32_t));
@@ -650,12 +659,13 @@ void save_data_blocks()
                 char* blocks = (char*)malloc(g_BLOCK_SIZE * num_cores);
                 wprintf(L"Compressing %s", item->path);
                 printf(", %u block\n", blockcnt);
+                size_t leftsize = item->size;
                 for (size_t j = 0; j < blockcnt; j += num_cores) {
                     size_t runcnt = min(num_cores, blockcnt - j);
                     _read(fd, blocks, g_BLOCK_SIZE * runcnt);
-                    for (size_t k = 0; k < runcnt; k++) {
+                    for (size_t k = 0; k < runcnt; k++, leftsize -= g_BLOCK_SIZE) {
                         tasks[k].block = blocks + k * g_BLOCK_SIZE;
-                        tasks[k].blocksize = g_BLOCK_SIZE;
+                        tasks[k].blocksize = min(g_BLOCK_SIZE, leftsize);
                         threads[k] = (HANDLE)_beginthreadex(NULL, 0, compresstask_proc, &tasks[k], 0, NULL);
                     }
                     //WaitForMultipleObjects(runcnt, threads, TRUE, INFINITE);
@@ -666,17 +676,18 @@ void save_data_blocks()
                             g_block_offset += _write(g_opkfd, tasks[k].zblock, tasks[k].zsize);
                             free(tasks[k].zblock);
                         } else {
-                            g_block_offset += _write(g_opkfd, tasks[k].block, g_BLOCK_SIZE);
+                            g_block_offset += _write(g_opkfd, tasks[k].block, tasks[k].blocksize);
                         }
-                        inode->blocks[j + k] = (tasks[k].zblock) ? tasks[k].zsize : (g_BLOCK_SIZE | (1 << 24));
+                        inode->blocks[j + k] = (tasks[k].zblock) ? tasks[k].zsize : (tasks[k].blocksize | (1 << 24));
                     }
                 }
                 free(blocks);
                 free(threads);
                 free(tasks);
             }
+            // notailends下只存size小于BLOCK_SIZE的
             size_t fragtail = item->size % g_BLOCK_SIZE;
-            if (fragtail) {
+            if (fragtail && (!g_notailends || (g_notailends && item->size < g_BLOCK_SIZE))) {
                 wprintf(L"Append %s, %u", item->path, fragtail);
                 printf(" to fragments.\n");
                 void* block = malloc(g_BLOCK_SIZE);
