@@ -1,41 +1,43 @@
-# SquashFS ¾µÏñÖÆ×÷¹¤¾ß
+# SquashFS é•œåƒåˆ¶ä½œå·¥å…·
 
-ÕâÊÇÒ»¸öÓÃÓÚÖÆ×÷¼æÈÝÓÚ RG300X µÈ GCW0 ¼æÈÝ»úÐÍµÄ SquashFS ¾µÏñµÄ¹¤¾ß.
+è¿™æ˜¯ä¸€ä¸ªç”¨äºŽåˆ¶ä½œå…¼å®¹äºŽ RG300X ç­‰ GCW0 å…¼å®¹æœºåž‹çš„ SquashFS é•œåƒçš„å·¥å…·.
 
-## ÌØÐÔ
+å› ä¸ºæ˜¯é€šè¿‡é˜…è¯»å’Œåˆ†æžæ–‡ä»¶æ ¼å¼æ’°å†™çš„, æ²¡æœ‰ä¼ æŸ“ GPL æŽˆæƒ.
 
-- Ä¬ÈÏÉú³É½Ï¾ÉµÄ SquashFS ¸ñÊ½¡£
-- ¿ÉÔËÐÐÓÚ Windows XP¡£
-- Ê¹ÓÃ Zopfli Ñ¹Ëõ£¬Ìá¹©±È Zlib ¸üºÃµÄÑ¹ËõÂÊ¡£
+## ç‰¹æ€§
 
-## ÔËÐÐ²ÎÊý
+- é»˜è®¤ç”Ÿæˆè¾ƒæ—§çš„ SquashFS æ ¼å¼ã€‚
+- å¯è¿è¡ŒäºŽ Windows XPã€‚
+- ä½¿ç”¨ Zopfli åŽ‹ç¼©ï¼Œæä¾›æ¯” Zlib æ›´å¥½çš„åŽ‹ç¼©çŽ‡ã€‚
+
+## è¿è¡Œå‚æ•°
 
 ```bash
-opack ÊäÈëÎÄ¼þ¼Ð Êä³ö¾µÏñ.opk
+opack è¾“å…¥æ–‡ä»¶å¤¹ è¾“å‡ºé•œåƒ.opk
 ```
 
-## ÈçºÎ±àÒë
+## å¦‚ä½•ç¼–è¯‘
 
-¿ÉÒÔÊ¹ÓÃÒÔÏÂ¹¤¾ßÁ´:
+å¯ä»¥ä½¿ç”¨ä»¥ä¸‹å·¥å…·é“¾:
 
 - WDK7
 - VC2010
 - VC2015
 - VC2017
 
-### Ê¹ÓÃ VC2010 ±àÒë
+### ä½¿ç”¨ VC2010 ç¼–è¯‘
 
-1. ½« `opack.c` ¸ÄÃûÎª `opack.cpp`.
-2. »òÕßÑ¡ÖÐ¸ÃÎÄ¼þ, µ¥¶ÀÔÚ±àÒëÑ¡ÏîÖÐ½« `Compile As` ÉèÖÃÎª `C++`, ÒòÎª VC2010 ²»Ö§³Ö C99.
+1. å°† `opack.c` æ”¹åä¸º `opack.cpp`.
+2. æˆ–è€…é€‰ä¸­è¯¥æ–‡ä»¶, å•ç‹¬åœ¨ç¼–è¯‘é€‰é¡¹ä¸­å°† `Compile As` è®¾ç½®ä¸º `C++`, å› ä¸º VC2010 ä¸æ”¯æŒ C99.
 
-### Ê¹ÓÃ VC2015/VC2017 ±àÒë
+### ä½¿ç”¨ VC2015/VC2017 ç¼–è¯‘
 
-ReleaseXPÅäÖÃµÄ±àÒëÑ¡ÏîÖÐÄ¬ÈÏ¼ÓÈëÁË `/d2noftol3`, ¸ÃÑ¡ÏîÊÇÔÚ¸ß°æ±¾VCÅäºÏWDKµÄmsvcrt.dllµÄ.
+ReleaseXPé…ç½®çš„ç¼–è¯‘é€‰é¡¹ä¸­é»˜è®¤åŠ å…¥äº† `/d2noftol3`, è¯¥é€‰é¡¹æ˜¯åœ¨é«˜ç‰ˆæœ¬VCé…åˆWDKçš„msvcrt.dllçš„.
 
-²»ÐèÒª¸ÄÃû `opack.c` »òÕßÉèÖÃ `Compile As` Ñ¡Ïî.
+ä¸éœ€è¦æ”¹å `opack.c` æˆ–è€…è®¾ç½® `Compile As` é€‰é¡¹.
 
-### ×¢ÒâÊÂÏî
+### æ³¨æ„äº‹é¡¹
 
-- `ReleaseXP` Ñ¡ÏîÊÇÁ´½Óµ½ `msvcrt.dll`. ´ËÅäÖÃÏÂÇëÐÞ¸Ä°üº¬Â·¾¶, »òÕßÔÚMSBuildÀïÃæ¸´ÖÆtoolset, ÐÞ¸ÄVC20xx-WDKÅäÖÃ.
-- `Release` Ñ¡ÏîÊÇÁ´½Óµ½¶ÔÓ¦°æ±¾µÄVCÔËÐÐ¿â, ÔÚXPÔËÐÐÊ±ºòÐèÒª°²×°¶ÔÓ¦µÄÔËÐÐ¿â.
+- `ReleaseXP` é€‰é¡¹æ˜¯é“¾æŽ¥åˆ° `msvcrt.dll`. æ­¤é…ç½®ä¸‹è¯·ä¿®æ”¹åŒ…å«è·¯å¾„, æˆ–è€…åœ¨MSBuildé‡Œé¢å¤åˆ¶toolset, ä¿®æ”¹VC20xx-WDKé…ç½®.
+- `Release` é€‰é¡¹æ˜¯é“¾æŽ¥åˆ°å¯¹åº”ç‰ˆæœ¬çš„VCè¿è¡Œåº“, åœ¨XPè¿è¡Œæ—¶å€™éœ€è¦å®‰è£…å¯¹åº”çš„å¸¦ç‰ˆæœ¬å·è¿è¡Œåº“.
 

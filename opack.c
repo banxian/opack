@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <process.h>
+#include <math.h>
 #ifdef USE_ZOPFLI
 #include "zopfli/zopfli.h"
 #include "zopfli/zlib_container.h"
@@ -230,8 +231,18 @@ typedef struct sortbundle
     uint64_t nFileSize;
 } sortbundle;
 
+void realistic_dir_parent(uint32_t startindex, uint32_t* parentarchor)
+{
+    for (int i = startindex; i < g_nodesize; i++) {
+        nodeitem* node = &g_nodes[i];
+        if (node->type == SQUASHFS_DIR_TYPE && node->parentnode == parentarchor) {
+            node->parentnodenum = *parentarchor; // 更新为锚点指向的值
+        }
+    }
+}
+
 // TODO: 递归构建目录列表, 最后遍历扫描目录混合列表, 再qsort扁平列表
-int accept_directory(const wchar_t* folder, uint32_t parent)
+int accept_directory(const wchar_t* folder, uint32_t* parent)
 {
     WIN32_FIND_DATAW ffd;
     wchar_t* findpattern = (wchar_t*)malloc(2 * (wcslen(folder) + sizeof "\\*"));
@@ -273,13 +284,10 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
     } while (FindNextFileW(hFind, &ffd) != 0);
     FindClose(hFind);
     // asc=2E6, desc=2EA, qsort+desc=2E8
-    qsort(sortlist, sortcount, sizeof(sortbundle), (int(*)(const void*,const void*))wcscmp);
+    //qsort(sortlist, sortcount, sizeof(sortbundle), (int(*)(const void*,const void*))wcscmp);
     stringtable* strtab = (stringtable*)calloc(1, sizeof(stringtable));
     uint32_t cur_dir_index = g_nodesize;
-    // 先加入gnodes列表, 后面再分配ID
-    nodeitem* diritem = new_nodeitem(SQUASHFS_DIR_TYPE, NULL, 0); // prevent reallocation
-    diritem->parentnodenum = parent;
-    diritem->paths = strtab;
+    uint32_t cur_dir_inode; // 用作锚点
     for (int i = 0; i < sortcount; i++) {
         sortbundle* sitem = &sortlist[i];
         //wprintf(L"%s\n", sitem->cFileName);
@@ -290,7 +298,7 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
             nitem->nodenum = sitem->inode_num;
         } else if (sitem->inode_type == SQUASHFS_DIR_TYPE) {
             //wprintf(L"Enter %s, parent idx %d\n", newpath, cur_dir_index);
-            sitem->inode_num = accept_directory(newpath, cur_dir_index);
+            sitem->inode_num = accept_directory(newpath, &cur_dir_inode); // 返回目录真实ID
             free(newpath); // diritem不使用newpath, 在此free, 别的newpath在main里free_nodes来free
         } else {
             HANDLE hFile = CreateFileW(newpath, 0, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
@@ -324,11 +332,14 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
         free(utf8);
     }
     // 在所有子目录循环结束后才生成自己ID
-    int cur_dir_inode = generate_inode_num();
+    nodeitem* diritem = new_nodeitem(SQUASHFS_DIR_TYPE, NULL, 0); // prevent reallocation
+    diritem->parentnode = parent;
+    diritem->paths = strtab;
+    cur_dir_inode = generate_inode_num();
 #ifdef _VERBOSE
     wprintf(L"assign %s #%d\n", folder, cur_dir_inode);
 #endif
-    diritem = &g_nodes[cur_dir_index]; // 重找回当前目录node
+    //diritem = &g_nodes[cur_dir_index]; // 重找回当前目录node
     diritem->nodenum = cur_dir_inode;
 #ifdef __cplusplus
     diritem->childs = (decltype(diritem->childs))malloc(sizeof(*diritem->childs) * sortcount); // VC2010有限度支持decltype
@@ -341,6 +352,7 @@ int accept_directory(const wchar_t* folder, uint32_t parent)
         diritem->childs[i].type = sortlist[i].inode_type;
     }
     free(sortlist);
+    realistic_dir_parent(cur_dir_index, &cur_dir_inode);
     return cur_dir_inode;
 }
 
@@ -356,14 +368,14 @@ void regenerate_inode_num()
             node->nodenum = realnodenum;
         }
         // fix parent
-        if (node->type == SQUASHFS_DIR_TYPE) {
+        /*if (node->type == SQUASHFS_DIR_TYPE) {
             int parentidx = node->parentnodenum;
             if (parentidx == -1) {
                 node->parentnodenum = 0;
             } else {
                 node->parentnodenum = g_nodes[parentidx].nodenum;
             }
-        }
+        }*/
     }
     for (int i = 0; i < g_nodesize; i++) {
         nodeitem* node = &g_nodes[i];
@@ -387,10 +399,13 @@ int wmain(int argc, wchar_t ** argv)
     }
 
     // 首先扫描目录
-    g_root_inode = accept_directory(argv[1], -1);
+    uint32_t semiparent;
+    g_root_inode = accept_directory(argv[1], &semiparent);
     if (g_root_inode < 0) {
         return 1;
     }
+    semiparent = g_nodesize + 1;
+    realistic_dir_parent(0, &semiparent);
     regenerate_inode_num();
 #ifdef _VERBOSE
     for (int i = 0; i < g_nodesize; i++) {
@@ -435,7 +450,7 @@ int wmain(int argc, wchar_t ** argv)
     sb.s_minor = SQUASHFS_MINOR;
     sb.flags = SQUASHFS_DUPLICATES; // 0x40
     sb.block_size = g_BLOCK_SIZE;
-    sb.block_log = 17;
+    sb.block_log = 17; //log2(g_BLOCK_SIZE);
     sb.compression = ZLIB_COMPRESSION; // 1
     sb.no_ids = 1;
     sb.lookup_table_start = -1;
@@ -628,7 +643,7 @@ void save_data_blocks()
     uint32_t num_cores = sysInfo.dwNumberOfProcessors;
     //uint16_t* nodeoffsets = pre_caculate_inode_offsets(); // 给dir entry查表用 (非倒置树将无法运行中排序)
     uint16_t* nodeoffsets = (uint16_t*)malloc(sizeof(uint16_t) * g_nodesize); // 给dir entry查表用(倒置树, 运行中排序)
-    for (int i = g_nodesize - 1; i >= 0; i--) {
+    for (int i = 0; i < g_nodesize; i++) {
         nodeitem* item = &g_nodes[i];
         if (item->type == SQUASHFS_REG_TYPE) {
 #ifdef _INC_CRTDEFS
@@ -743,6 +758,7 @@ void save_data_blocks()
                 header->count = item->paths->count - 1; // TODO: 每个header最多256记录, 多了要拆多个header
                 header->inode_number = startnode; // 并非目录inode
                 header->start_block = (metablockpos / MDB_SIZE) * MDB_SIZE; // 明文偏移, 不需压缩后回写?
+                // TODO: 按原生顺序扫描和存储, 目录表才sort
                 for (size_t j = 0; j <= header->count; j++) {
                     const char* filename = &item->paths->data[item->paths->indexes[j]];
                     size_t namelen = strlen(filename);
