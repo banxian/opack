@@ -13,8 +13,12 @@
 ## 运行参数
 
 ```bash
-opack 输入文件夹 输出镜像.opk
+opack 输入文件夹 输出镜像.opk 可选选项
 ```
+
+- -no-tailends 不将大文件末尾合入碎片
+- -no-autoexec 关闭自动给ELF文件加权限功能
+- -real-time 使用实际的文件时间
 
 ## 如何编译
 
