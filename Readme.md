@@ -41,3 +41,7 @@ ReleaseXP配置的编译选项中默认加入了 `/d2noftol3`, 该选项是在�
 - `ReleaseXP` 选项是链接到 `msvcrt.dll`. 此配置下请修改包含路径, 或者在MSBuild里面复制toolset, 修改VC20xx-WDK配置.
 - `Release` 选项是链接到对应版本的VC运行库, 在XP运行时候需要安装对应的带版本号运行库.
 
+## RG300x对opk文件的要求
+
+- 只支持gzip压缩格式, 不支持lzo/lzma/xz/zstd的压缩格式.
+- 可执行文件需要执行权限, 其他文件权限可以为空.
