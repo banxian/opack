@@ -19,6 +19,8 @@ opack 输入文件夹 输出镜像.opk 可选选项
 - -no-tailends 不将大文件末尾合入碎片
 - -no-autoexec 关闭自动给ELF文件加权限功能
 - -real-time 使用实际的文件时间
+- -old-inodenum 使用旧式风格inode编号(保留原生排序)
+- -b 256K 指定数据分块大小, 可以用K或者M作为单位
 
 ## 如何编译
 
@@ -39,6 +41,11 @@ opack 输入文件夹 输出镜像.opk 可选选项
 ReleaseXP配置的编译选项中默认加入了 `/d2noftol3`, 该选项是在高版本VC配合WDK的msvcrt.dll的.
 
 不需要改名 `opack.c` 或者设置 `Compile As` 选项.
+
+### 条件编译
+
+- _VERBOSE 打印一些生成文件布局等信息
+- USE_ZOPFLI 使用zopfli替代zlib1.dll
 
 ### 注意事项
 

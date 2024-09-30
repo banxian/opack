@@ -77,6 +77,7 @@ size_t g_BLOCK_SIZE = 128*1024;
 bool g_tailends = true;
 bool g_zerotime = true;
 bool g_autoexec = true;
+bool g_newinoderules = true;
 int g_opkfd;
 int g_root_inode;
 size_t g_block_offset;
@@ -84,6 +85,8 @@ uint64_t g_data_size;
 nodeitem* g_nodes;
 int g_nodesize = 0;
 struct squashfs_super_block sb;
+uint32_t g_mkfs_time = 0;
+uint64_t g_raw_filesizes = 0;
 
 void save_data_blocks();
 char* unicode_to_utf8(const wchar_t* source);
@@ -251,7 +254,11 @@ uint32_t convert_filetime_unix(FILETIME* mtime)
     if (g_zerotime) {
         return 0;
     }
-    return ((LARGE_INTEGER*)mtime)->QuadPart / 10000000 - 11644473600LL;
+    uint32_t timestamp = ((LARGE_INTEGER*)mtime)->QuadPart / 10000000 - 11644473600LL;
+    if (!g_zerotime && g_mkfs_time < timestamp) {
+        g_mkfs_time = timestamp;
+    }
+    return timestamp;
 }
 
 // TODO: 递归构建目录列表, 最后遍历扫描目录混合列表, 再qsort扁平列表
@@ -300,6 +307,7 @@ int accept_directory(const wchar_t* folder, uint32_t* parent)
             item->inode_num = generate_inode_num2();
             item->nFileSize = filesize.QuadPart;
             item->mtime = convert_filetime_unix(&ffd.ftLastWriteTime);
+            g_raw_filesizes += filesize.QuadPart;
         }
     } while (FindNextFileW(hFind, &ffd) != 0);
     FindClose(hFind);
@@ -361,7 +369,6 @@ int accept_directory(const wchar_t* folder, uint32_t* parent)
 #ifdef _VERBOSE
     wprintf(L"assign %s #%d\n", folder, cur_dir_inode);
 #endif
-    //diritem = &g_nodes[cur_dir_index]; // 重找回当前目录node
     diritem->nodenum = cur_dir_inode;
     diritem->mtime = dirmtime;
 #ifdef __cplusplus
@@ -386,19 +393,10 @@ void regenerate_inode_num()
         nodeitem* node = &g_nodes[i];
         if (node->type == SQUASHFS_REG_TYPE || node->type == SQUASHFS_SYMLINK_TYPE) {
             //long realnodenum = generate_inode_num(); // 重新排序
-            long realnodenum = node->nodenum + g_root_inode; // 兼容扫描时顺序
+            long realnodenum = g_newinoderules?generate_inode_num():(node->nodenum + g_root_inode); // 兼容扫描时顺序
             lookuptable[node->nodenum] = realnodenum;
             node->nodenum = realnodenum;
         }
-        // fix parent
-        /*if (node->type == SQUASHFS_DIR_TYPE) {
-            int parentidx = node->parentnodenum;
-            if (parentidx == -1) {
-                node->parentnodenum = 0;
-            } else {
-                node->parentnodenum = g_nodes[parentidx].nodenum;
-            }
-        }*/
     }
     for (int i = 0; i < g_nodesize; i++) {
         nodeitem* node = &g_nodes[i];
@@ -430,6 +428,19 @@ int wmain(int argc, wchar_t ** argv)
         if (wcsicmp(argv[i], L"-no-tailends") == 0) {
             g_tailends = false;
         }
+        if (wcsicmp(argv[i], L"-old-inodenum") == 0) {
+            g_newinoderules = false;
+        }
+        if (wcsicmp(argv[i], L"-b") == 0) {
+            wchar_t* blocksize = argv[++i];
+            wchar_t* end = &blocksize[wcslen(blocksize) - 1];
+            uint32_t mulfac = 1;
+            if (*end == L'K' || *end == L'M') {
+                mulfac = (*end == L'K')?1024:1024*1024;
+                *end = 0;
+            }
+            g_BLOCK_SIZE = _wtol(blocksize) * mulfac;
+        }
     }
 
     // 首先扫描目录
@@ -438,7 +449,7 @@ int wmain(int argc, wchar_t ** argv)
     if (g_root_inode < 0) {
         return 1;
     }
-    semiparent = g_nodesize + 1;
+    semiparent = g_newinoderules?0:(g_nodesize + 1);
     realistic_dir_parent(0, &semiparent);
     regenerate_inode_num();
 #ifdef _VERBOSE
@@ -452,12 +463,6 @@ int wmain(int argc, wchar_t ** argv)
         }
         if (node->type == SQUASHFS_DIR_TYPE) {
             printf("dir #%d, parent %d\n", node->nodenum, node->parentnodenum);
-            //int parentidx = node->parentnodenum;
-            //if (parentidx == -1) {
-            //    printf("dir #%d, parent %d\n", node->nodenum, parentidx);
-            //} else {
-            //    printf("dir #%d, parent %d = #%d\n", node->nodenum, parentidx, g_nodes[parentidx].nodenum);
-            //}
             const char* names[] = {"dir ", "file", "link"};
             for (int j = 0; j < node->paths->count; j++) {
                 printf("  %s, #%d\n", names[node->childs[j].type - 1], node->childs[j].node);
@@ -479,17 +484,22 @@ int wmain(int argc, wchar_t ** argv)
 
     free_nodes();
 
+    uint64_t compressedfilesize = sb.inode_table_start - sizeof(struct squashfs_super_block);
+    uint64_t mkfsoverhead = g_block_offset - compressedfilesize;
+    printf("files body %I64u -> %I64u, compression ratio: %f\nmkfs overhead: %I64u bytes\n", g_raw_filesizes, compressedfilesize, (double)compressedfilesize / g_raw_filesizes, mkfsoverhead);
+
     sb.s_magic = SQUASHFS_MAGIC; // 'sqsh';
     sb.s_major = SQUASHFS_MAJOR;
     sb.s_minor = SQUASHFS_MINOR;
     sb.flags = SQUASHFS_DUPLICATES; // 0x40
     sb.block_size = g_BLOCK_SIZE;
-    sb.block_log = 17; //log2(g_BLOCK_SIZE);
+    sb.block_log = 31 - _lzcnt_u32(g_BLOCK_SIZE); //log2(g_BLOCK_SIZE);
     sb.compression = ZLIB_COMPRESSION; // 1
     sb.no_ids = 1;
     sb.lookup_table_start = -1;
     sb.xattr_id_table_start = -1;
     sb.bytes_used = g_block_offset;
+    sb.mkfs_time = g_mkfs_time;
     _lseek(g_opkfd, 0, SEEK_SET);
     _write(g_opkfd, &sb, sizeof(sb)); // 更新superblock
 
@@ -833,6 +843,7 @@ void save_data_blocks()
         }
         free(fragblocks.data);
     }
+    //g_compressed_datasize = g_block_offset - sizeof(struct squashfs_super_block);
     // 预压缩directory table, 再更新dir inode的start_block
     uint32_t* zdirtablestarts = (uint32_t*)malloc(sizeof(uint32_t)*(dirtable.size + MDB_SIZE - 1)/MDB_SIZE);
     bytevec* zdirtable = pre_compress_meta_blocks(&dirtable, zdirtablestarts);
