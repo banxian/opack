@@ -311,7 +311,7 @@ int accept_directory(const wchar_t* folder, uint32_t* parent)
         }
     } while (FindNextFileW(hFind, &ffd) != 0);
     FindClose(hFind);
-    // asc=2E6, desc=2EA, qsort+desc=2E8
+    // ascending tree: 2E6, descending tree: 2EA, qsort + descending tree: 2E8
     qsort(sortlist, sortcount, sizeof(sortbundle), (int(*)(const void*,const void*))wcscmp);
     stringtable* strtab = (stringtable*)calloc(1, sizeof(stringtable));
     uint32_t cur_dir_index = g_nodesize;
@@ -326,7 +326,7 @@ int accept_directory(const wchar_t* folder, uint32_t* parent)
             nitem->nodenum = sitem->inode_num;
             nitem->mtime = sitem->mtime;
         } else if (sitem->inode_type == SQUASHFS_DIR_TYPE) {
-            //wprintf(L"Enter %s, parent idx %d\n", newpath, cur_dir_index);
+            //wprintf(L"Entering %s, parent idx %d\n", newpath, cur_dir_index);
             sitem->inode_num = accept_directory(newpath, &cur_dir_inode); // 返回目录真实ID
             free(newpath); // diritem不使用newpath, 在此free, 别的newpath在main里free_nodes来free
         } else {
@@ -382,7 +382,7 @@ int accept_directory(const wchar_t* folder, uint32_t* parent)
         diritem->childs[i].type = sortlist[i].inode_type;
     }
     free(sortlist);
-    realistic_dir_parent(cur_dir_index, &cur_dir_inode);
+    realistic_dir_parent(cur_dir_index, &cur_dir_inode); // 只修复新增的部分
     return cur_dir_inode;
 }
 
