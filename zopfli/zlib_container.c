@@ -69,11 +69,12 @@ void ZopfliZlibCompress(const ZopfliOptions* options,
   ZOPFLI_APPEND_DATA((checksum >> 16) % 256, out, outsize);
   ZOPFLI_APPEND_DATA((checksum >> 8) % 256, out, outsize);
   ZOPFLI_APPEND_DATA(checksum % 256, out, outsize);
-
+#ifdef _VERBOSE
   if (options->verbose) {
     fprintf(stderr,
             "Original Size: %d, Zlib: %d, Compression: %f%% Removed\n",
             (int)insize, (int)*outsize,
             100.0 * (double)(insize - *outsize) / (double)insize);
   }
+#endif
 }

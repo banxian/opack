@@ -490,9 +490,11 @@ void ZopfliLZ77Optimal(ZopfliBlockState *s,
                    length_array, GetCostStat, (void*)&stats,
                    &currentstore, h, costs);
     cost = ZopfliCalculateBlockSize(&currentstore, 0, currentstore.size, 2);
+#ifdef _VERBOSE
     if (s->options->verbose_more || (s->options->verbose && cost < bestcost)) {
       fprintf(stderr, "Iteration %d: %d bit\n", i, (int) cost);
     }
+#endif
     if (cost < bestcost) {
       /* Copy to the output store. */
       ZopfliCopyLZ77Store(&currentstore, store);

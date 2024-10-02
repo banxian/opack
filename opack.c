@@ -21,7 +21,7 @@
 #define MDB_SIZE 8192
 #define MAX_FRAGMENTS_PER_BLOCK 512
 #define INITIAL_BLOCK_CAPACITY 100
-#define INITIAL_DIR_ENTRIES 16
+#define ARRAYCOUNT_INCREMENTAL 16
 #define ELF_MAGIC 0x464C457F
 
 #ifdef _VERBOSE
@@ -81,12 +81,11 @@ bool g_newinoderules = true;
 int g_opkfd;
 int g_root_inode;
 size_t g_block_offset;
-uint64_t g_data_size;
+uint64_t g_raw_filesizes = 0;
 nodeitem* g_nodes;
 int g_nodesize = 0;
 struct squashfs_super_block sb;
 uint32_t g_mkfs_time = 0;
-uint64_t g_raw_filesizes = 0;
 
 void save_data_blocks();
 char* unicode_to_utf8(const wchar_t* source);
@@ -112,8 +111,8 @@ long generate_inode_num2()
 
 nodeitem* new_nodeitem(int type, const wchar_t* path, uint64_t size)
 {
-    if (g_nodesize % 16 == 0) {
-        g_nodes = (nodeitem*)realloc(g_nodes, sizeof(nodeitem) * (g_nodesize + 16));
+    if (g_nodesize % ARRAYCOUNT_INCREMENTAL == 0) {
+        g_nodes = (nodeitem*)realloc(g_nodes, sizeof(nodeitem) * (g_nodesize + ARRAYCOUNT_INCREMENTAL));
     }
     nodeitem* item = &g_nodes[g_nodesize++];
     item->type = type;
@@ -174,8 +173,8 @@ void* alloc_bytevec(bytevec* vec, size_t len)
 
 void add_to_stringtable(stringtable* table, const void* str)
 {
-    if (table->count % 16 == 0) {
-        int* newindexes = (int*)realloc(table->indexes, sizeof(int) * (table->count + 16));
+    if (table->count % ARRAYCOUNT_INCREMENTAL == 0) {
+        int* newindexes = (int*)realloc(table->indexes, sizeof(int) * (table->count + ARRAYCOUNT_INCREMENTAL));
         if (newindexes == NULL) {
             perror("reallocation failed in bytevec");
             return;
@@ -278,8 +277,8 @@ int accept_directory(const wchar_t* folder, uint32_t* parent)
     sortbundle* sortlist = NULL;
     int sortcount = 0;
     do {
-        if (sortcount % 16 == 0) {
-            sortlist = (sortbundle*)realloc(sortlist, sizeof(sortbundle) * (sortcount + 16));
+        if (sortcount % ARRAYCOUNT_INCREMENTAL == 0) {
+            sortlist = (sortbundle*)realloc(sortlist, sizeof(sortbundle) * (sortcount + ARRAYCOUNT_INCREMENTAL));
         }
         if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if (wcscmp(ffd.cFileName, L".") && wcscmp(ffd.cFileName, L"..")) {
@@ -300,7 +299,6 @@ int accept_directory(const wchar_t* folder, uint32_t* parent)
             item->mtime = convert_filetime_unix(&ffd.ftLastWriteTime);
         } else {
             LARGE_INTEGER filesize = {ffd.nFileSizeLow, ffd.nFileSizeHigh};
-            g_data_size += filesize.QuadPart;
             sortbundle* item = &sortlist[sortcount++];
             memcpy(item->cFileName, ffd.cFileName, sizeof(ffd.cFileName));
             item->inode_type = SQUASHFS_REG_TYPE;
@@ -723,7 +721,7 @@ void save_data_blocks()
                 for (size_t j = 0; j < blockcnt; j += num_cores) {
                     size_t runcnt = min(num_cores, blockcnt - j);
                     _read(fd, blocks, g_BLOCK_SIZE * runcnt);
-                    if (g_autoexec && j == 0 && leftsize >=4 && *(uint32_t*)blocks == 0x464C457F) {
+                    if (g_autoexec && j == 0 && leftsize >=4 && *(uint32_t*)blocks == ELF_MAGIC) {
                         inode->header.mode = 0500;
                     }
                     for (size_t k = 0; k < runcnt; k++, leftsize -= g_BLOCK_SIZE) {
@@ -754,7 +752,7 @@ void save_data_blocks()
             size_t fragtail = item->size % g_BLOCK_SIZE;
             if (fragtail && (g_tailends || (!g_tailends && item->size < g_BLOCK_SIZE))) {
                 wprintf(L"Append %s, %u", item->path, fragtail);
-                printf(" to fragments.\n");
+                printf(" bytes to fragments.\n");
                 void* block = malloc(g_BLOCK_SIZE);
                 _read(fd, block, fragtail);
                 inode->fragment = fragblocks.size / g_BLOCK_SIZE;
@@ -843,7 +841,6 @@ void save_data_blocks()
         }
         free(fragblocks.data);
     }
-    //g_compressed_datasize = g_block_offset - sizeof(struct squashfs_super_block);
     // 预压缩directory table, 再更新dir inode的start_block
     uint32_t* zdirtablestarts = (uint32_t*)malloc(sizeof(uint32_t)*(dirtable.size + MDB_SIZE - 1)/MDB_SIZE);
     bytevec* zdirtable = pre_compress_meta_blocks(&dirtable, zdirtablestarts);

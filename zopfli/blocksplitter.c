@@ -264,11 +264,11 @@ void ZopfliBlockSplitLZ77(const ZopfliOptions* options,
       break;
     }
   }
-
+#ifdef _VERBOSE
   if (options->verbose) {
     PrintBlockSplitPoints(lz77, *splitpoints, *npoints);
   }
-
+#endif
   free(done);
 }
 

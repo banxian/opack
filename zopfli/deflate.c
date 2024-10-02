@@ -718,9 +718,11 @@ static void AddLZ77Block(const ZopfliOptions* options, int btype, int final,
 
     detect_tree_size = *outsize;
     AddDynamicTree(ll_lengths, d_lengths, bp, out, outsize);
+#ifdef _VERBOSE
     if (options->verbose) {
       fprintf(stderr, "treesize: %d\n", (int)(*outsize - detect_tree_size));
     }
+#endif
   }
 
   ZopfliLengthsToSymbols(ll_lengths, ZOPFLI_NUM_LL, 15, ll_symbols);
@@ -737,11 +739,13 @@ static void AddLZ77Block(const ZopfliOptions* options, int btype, int final,
     uncompressed_size += lz77->dists[i] == 0 ? 1 : lz77->litlens[i];
   }
   compressed_size = *outsize - detect_block_size;
+#ifdef _VERBOSE
   if (options->verbose) {
     fprintf(stderr, "compressed block size: %d (%dk) (unc: %d)\n",
            (int)compressed_size, (int)(compressed_size / 1024),
            (int)(uncompressed_size));
   }
+#endif
 }
 
 static void AddLZ77BlockAutoType(const ZopfliOptions* options, int final,
@@ -922,10 +926,12 @@ void ZopfliDeflate(const ZopfliOptions* options, int btype, int final,
     i += size;
   } while (i < insize);
 #endif
+#ifdef _VERBOSE
   if (options->verbose) {
     fprintf(stderr,
             "Original Size: %lu, Deflate: %lu, Compression: %f%% Removed\n",
             (unsigned long)insize, (unsigned long)(*outsize - offset),
             100.0 * (double)(insize - (*outsize - offset)) / (double)insize);
   }
+#endif
 }

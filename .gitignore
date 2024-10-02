@@ -24,3 +24,4 @@ Makefile
 Makefile.*
 claude*.c
 opack0907.cpp
+msvcrt*.lib
